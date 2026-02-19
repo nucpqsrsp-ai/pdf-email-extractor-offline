@@ -303,4 +303,3 @@ if __name__ == "__main__":
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         os.chdir(os.path.dirname(sys.executable))
     main()
-``
