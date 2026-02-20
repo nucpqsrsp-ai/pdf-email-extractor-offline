@@ -110,30 +110,58 @@ def salvar_docx_emails(emails_unicos, saida_docx):
         doc.add_paragraph('Nenhum e-mail encontrado.')
     doc.save(saida_docx)
 
-def salvar_docx_lista_tuplas(titulo, itens, saida_docx):
+def salvar_docx_cnpj(itens, saida_docx):
     """
-    itens: lista de tuplas (nome_arquivo, texto_multilinha_ou_none)
-    Gera um DOCX com título e, para cada item, mostra "Arquivo: X" e as linhas.
+    itens: lista de tuplas (nome_arquivo, linha_cnpj)
+    Gera um DOCX SEM a linha 'Arquivo: ...', contendo apenas as linhas de CNPJ.
     """
     doc = Document()
-    doc.add_heading(titulo, level=1)
+    doc.add_heading("Linhas com CNPJ (primeira ocorrência por arquivo)", level=1)
     doc.add_paragraph(f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
     doc.add_paragraph('')
 
     if not itens:
         doc.add_paragraph('Nenhum dado encontrado.')
     else:
-        for nome_arq, texto in itens:
-            p = doc.add_paragraph()
-            run = p.add_run(f"Arquivo: {nome_arq}")
-            run.bold = True
-            if texto:
-                for linha in str(texto).splitlines():
+        # Apenas a linha de CNPJ, uma por parágrafo
+        for _, linha_cnpj in itens:
+            if linha_cnpj:
+                doc.add_paragraph(linha_cnpj)
+            else:
+                doc.add_paragraph("(vazio)")
+    doc.save(saida_docx)
+
+def salvar_docx_enderecos(itens_end, mapa_cnpj_por_arquivo, saida_docx):
+    """
+    itens_end: lista de tuplas (nome_arquivo, trecho_endereco_multilinha)
+    mapa_cnpj_por_arquivo: dict {nome_arquivo: linha_cnpj}
+    Gera um DOCX SEM a linha 'Arquivo: ...', incluindo:
+      - Primeira linha com CNPJ (se existir para o arquivo)
+      - Trecho entre CEP e QUADRO (linhas subsequentes)
+    """
+    doc = Document()
+    doc.add_heading("Trechos entre CEP e QUADRO (primeira ocorrência por arquivo)", level=1)
+    doc.add_paragraph(f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
+    doc.add_paragraph('')
+
+    if not itens_end:
+        doc.add_paragraph('Nenhum dado encontrado.')
+    else:
+        for nome_arq, trecho in itens_end:
+            # 1) Linha do CNPJ (se houver para esse arquivo)
+            linha_cnpj = mapa_cnpj_por_arquivo.get(nome_arq)
+            if linha_cnpj:
+                doc.add_paragraph(linha_cnpj)
+
+            # 2) Trecho de endereço (linhas)
+            if trecho:
+                for linha in str(trecho).splitlines():
                     doc.add_paragraph(linha)
             else:
                 doc.add_paragraph("(vazio)")
-            doc.add_paragraph("")  # espaço entre registros
 
+            # Espaço entre blocos (entre arquivos)
+            doc.add_paragraph("")
     doc.save(saida_docx)
 
 # ---------------------------------------------
@@ -207,6 +235,9 @@ def processar(btn_processar, txt_log):
         # pasta de saída = pasta do primeiro PDF selecionado
         pasta_saida = os.path.dirname(arquivos[0]) if arquivos else os.getcwd()
 
+        # ---------- MAPA: nome_arquivo -> linha CNPJ (para uso nos endereços)
+        cnpj_por_arquivo = {nome: linha for (nome, linha) in cnpj_itens}
+
         # --------- Salvar 3 DOCX ---------
         # 1) E-mails
         saida_emails_docx = os.path.join(pasta_saida, "emails_encontrados.docx")
@@ -226,10 +257,10 @@ def processar(btn_processar, txt_log):
             else:
                 saida_emails_docx = None
 
-        # 2) CNPJ
+        # 2) CNPJ (sem 'Arquivo: ...')
         saida_cnpj_docx = os.path.join(pasta_saida, "extrair_cnpj_nome.docx")
         try:
-            salvar_docx_lista_tuplas("Linhas com CNPJ (primeira ocorrência por arquivo)", cnpj_itens, saida_cnpj_docx)
+            salvar_docx_cnpj(cnpj_itens, saida_cnpj_docx)
         except Exception:
             log(txt_log, "⚠️ Não foi possível gravar o DOCX de CNPJ nessa pasta. Escolha outro local…")
             alt = filedialog.asksaveasfilename(
@@ -239,15 +270,15 @@ def processar(btn_processar, txt_log):
                 initialfile="extrair_cnpj_nome.docx"
             )
             if alt:
-                salvar_docx_lista_tuplas("Linhas com CNPJ (primeira ocorrência por arquivo)", cnpj_itens, alt)
+                salvar_docx_cnpj(cnpj_itens, alt)
                 saida_cnpj_docx = alt
             else:
                 saida_cnpj_docx = None
 
-        # 3) Endereços
+        # 3) Endereços (sem 'Arquivo: ...' e com a 1ª linha CNPJ no topo)
         saida_end_docx = os.path.join(pasta_saida, "extrair_enderecos.docx")
         try:
-            salvar_docx_lista_tuplas("Trechos entre CEP e QUADRO (primeira ocorrência por arquivo)", end_itens, saida_end_docx)
+            salvar_docx_enderecos(end_itens, cnpj_por_arquivo, saida_end_docx)
         except Exception:
             log(txt_log, "⚠️ Não foi possível gravar o DOCX de endereços nessa pasta. Escolha outro local…")
             alt = filedialog.asksaveasfilename(
@@ -257,7 +288,7 @@ def processar(btn_processar, txt_log):
                 initialfile="extrair_enderecos.docx"
             )
             if alt:
-                salvar_docx_lista_tuplas("Trechos entre CEP e QUADRO (primeira ocorrência por arquivo)", end_itens, alt)
+                salvar_docx_enderecos(end_itens, cnpj_por_arquivo, alt)
                 saida_end_docx = alt
             else:
                 saida_end_docx = None
