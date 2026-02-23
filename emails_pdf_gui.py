@@ -3,6 +3,7 @@ import re
 import sys
 import csv
 import traceback
+import unicodedata  # NOVO
 from datetime import datetime
 from tkinter import (
     Tk, Button, Label, Text, END, filedialog, Scrollbar, RIGHT, Y, LEFT, BOTH,
@@ -123,7 +124,6 @@ def salvar_docx_cnpj(itens, saida_docx):
     if not itens:
         doc.add_paragraph('Nenhum dado encontrado.')
     else:
-        # Apenas a linha de CNPJ, uma por parágrafo
         for _, linha_cnpj in itens:
             if linha_cnpj:
                 doc.add_paragraph(linha_cnpj)
@@ -135,9 +135,6 @@ def salvar_docx_enderecos(itens_end, mapa_cnpj_por_arquivo, saida_docx):
     """
     itens_end: lista de tuplas (nome_arquivo, trecho_endereco_multilinha)
     mapa_cnpj_por_arquivo: dict {nome_arquivo: linha_cnpj}
-    Gera um DOCX SEM a linha 'Arquivo: ...', incluindo:
-      - Primeira linha com CNPJ (se existir para o arquivo)
-      - Trecho entre CEP e QUADRO (linhas subsequentes)
     """
     doc = Document()
     doc.add_heading("Trechos entre CEP e QUADRO (primeira ocorrência por arquivo)", level=1)
@@ -148,20 +145,112 @@ def salvar_docx_enderecos(itens_end, mapa_cnpj_por_arquivo, saida_docx):
         doc.add_paragraph('Nenhum dado encontrado.')
     else:
         for nome_arq, trecho in itens_end:
-            # 1) Linha do CNPJ (se houver para esse arquivo)
             linha_cnpj = mapa_cnpj_por_arquivo.get(nome_arq)
             if linha_cnpj:
                 doc.add_paragraph(linha_cnpj)
-
-            # 2) Trecho de endereço (linhas)
             if trecho:
                 for linha in str(trecho).splitlines():
                     doc.add_paragraph(linha)
             else:
                 doc.add_paragraph("(vazio)")
-
-            # Espaço entre blocos (entre arquivos)
             doc.add_paragraph("")
+    doc.save(saida_docx)
+
+# ---------- NOVO: utilitários de normalização/pesquisa ----------
+
+def _normalize(s: str) -> str:
+    """Remove acentos e coloca em minúsculas para busca robusta."""
+    if s is None:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", s)
+    s_sem_acento = "".join(ch for ch in nfkd if not unicodedata.combining(ch))
+    return s_sem_acento.lower()
+
+# ---------- NOVO: extração Razão Social e CNPJ até 'R' ----------
+
+def extrair_razao_social(caminho_pdf: str):
+    """
+    Procura a 1ª linha que contém 'Razão Social' (variações com/sem acento e caixa)
+    e retorna APENAS o texto à direita do marcador na MESMA linha.
+    """
+    variantes = ["Razão Social", "RAZÃO SOCIAL", "Razao Social", "RAZAO SOCIAL"]
+    try:
+        with open(caminho_pdf, "rb") as f:
+            reader = PdfReader(f)
+            for page in reader.pages:
+                txt = (page.extract_text() or "")
+                for linha in txt.splitlines():
+                    for v in variantes:
+                        if v in linha:
+                            pos = linha.find(v) + len(v)
+                            # Ignora pontuação comum entre label e valor
+                            valor = linha[pos:].lstrip(" :\t-").strip()
+                            if valor:
+                                return valor
+                    # fallback: busca normalizada (sem acento / minúscula)
+                    if "razao social" in _normalize(linha):
+                        # tentar achar índice aproximado na string original
+                        # usando 'Razao Social' (sem acento) como referência
+                        idx_norm = _normalize(linha).find("razao social")
+                        # recuperar comprimento da label original "Razão Social"
+                        pos_aprox = idx_norm + len("razao social")
+                        # como é aproximado, apenas corta uma quantidade segura:
+                        valor = linha[pos_aprox:].lstrip(" :\t-").strip()
+                        if valor:
+                            return valor
+    except Exception:
+        pass
+    return None
+
+def extrair_cnpj_ate_R(caminho_pdf: str):
+    """
+    Procura a 1ª ocorrência de 'CNPJ' e retorna a substring
+    DE 'CNPJ' ATÉ a primeira letra 'R' após ele (SEM incluir 'R').
+    Caso não encontre 'R' após 'CNPJ', retorna da ocorrência até o fim da linha.
+    """
+    try:
+        with open(caminho_pdf, "rb") as f:
+            reader = PdfReader(f)
+            for page in reader.pages:
+                txt = (page.extract_text() or "")
+                for linha in txt.splitlines():
+                    if "CNPJ" in linha:
+                        start = linha.find("CNPJ")
+                        sub = linha[start:]
+                        # achar a primeira letra 'R' após 'CNPJ'
+                        idx_r = sub.find("R")
+                        if idx_r > 0:
+                            trecho = sub[:idx_r].rstrip()
+                        else:
+                            trecho = sub.strip()
+                        # opcional: remover espaços/pontuação supérflua no fim
+                        return trecho.rstrip(" -:;")
+    except Exception:
+        pass
+    return None
+
+# ---------- NOVO: salvar DOCX (Razão + CNPJ) ----------
+
+def salvar_docx_razao_cnpj(pares, saida_docx):
+    """
+    pares: lista de tuplas (razao_social, cnpj_trecho)
+    Grava uma linha por arquivo no formato:
+      <Razão Social> <TAB> <CNPJ...até 'R'>
+    """
+    doc = Document()
+    doc.add_heading("Razão Social e CNPJ (1ª ocorrência por arquivo)", level=1)
+    doc.add_paragraph(f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
+    doc.add_paragraph('')
+
+    if not pares:
+        doc.add_paragraph('Nenhum dado encontrado.')
+    else:
+        for razao, cnpj_trecho in pares:
+            rz = razao if razao else "(Razão Social não encontrada)"
+            cj = cnpj_trecho if cnpj_trecho else "(CNPJ não encontrado)"
+            # mesma linha, separados por TAB
+            doc.add_paragraph(f"{rz}\t{cj}")
+
     doc.save(saida_docx)
 
 # ---------------------------------------------
@@ -206,7 +295,7 @@ def processar(btn_processar, txt_log):
             except Exception as e:
                 log(txt_log, f"   ✗ Erro ao extrair e-mails: {e}")
 
-            # CNPJ
+            # CNPJ (linha inteira - modo antigo)
             try:
                 linha_cnpj = primeira_linha_com_cnpj(caminho)
                 if linha_cnpj:
@@ -307,17 +396,93 @@ def processar(btn_processar, txt_log):
     finally:
         btn_processar.config(state=NORMAL)
 
+# ---------- NOVO: fluxo do 2º botão (Razão + CNPJ) ----------
+
+def processar_razao_cnpj(btn, txt_log):
+    try:
+        btn.config(state=DISABLED)
+
+        # limpar log
+        txt_log.config(state=NORMAL)
+        txt_log.delete(1.0, END)
+        txt_log.config(state=DISABLED)
+
+        # selecionar PDFs
+        arquivos = filedialog.askopenfilenames(
+            title="Selecione um ou mais PDFs",
+            filetypes=[("Arquivos PDF", "*.pdf")]
+        )
+        if not arquivos:
+            log(txt_log, "⚠️ Nenhum PDF selecionado.")
+            return
+
+        log(txt_log, f"📄 PDFs selecionados: {len(arquivos)}")
+
+        pares = []  # (razao_social, cnpj_trecho)
+
+        for idx, caminho in enumerate(arquivos, start=1):
+            nome_arq = os.path.basename(caminho)
+            log(txt_log, f"• ({idx}/{len(arquivos)}) {nome_arq}")
+
+            try:
+                razao = extrair_razao_social(caminho)
+                log(txt_log, f"   → Razão Social: {'OK' if razao else 'não encontrada'}")
+            except Exception as e:
+                log(txt_log, f"   ✗ Erro na Razão Social: {e}")
+                razao = None
+
+            try:
+                cnpj = extrair_cnpj_ate_R(caminho)
+                log(txt_log, f"   → CNPJ (até 'R'): {'OK' if cnpj else 'não encontrado'}")
+            except Exception as e:
+                log(txt_log, f"   ✗ Erro no CNPJ (até 'R'): {e}")
+                cnpj = None
+
+            pares.append((razao, cnpj))
+
+        # pasta de saída = pasta do primeiro PDF selecionado
+        pasta_saida = os.path.dirname(arquivos[0]) if arquivos else os.getcwd()
+        saida_docx = os.path.join(pasta_saida, "extrair_cnpj_nome.docx")
+
+        try:
+            salvar_docx_razao_cnpj(pares, saida_docx)
+            messagebox.showinfo("Concluído", f"Processo concluído.\nDOCX: {saida_docx}")
+        except Exception as e:
+            log(txt_log, "⚠️ Não foi possível gravar o DOCX nessa pasta. Escolha outro local…")
+            alt = filedialog.asksaveasfilename(
+                title="Salvar DOCX (Razão + CNPJ) como",
+                defaultextension=".docx",
+                filetypes=[("Documento Word", "*.docx")],
+                initialfile="extrair_cnpj_nome.docx"
+            )
+            if alt:
+                salvar_docx_razao_cnpj(pares, alt)
+                messagebox.showinfo("Concluído", f"Processo concluído.\nDOCX: {alt}")
+            else:
+                messagebox.showwarning("Aviso", "Arquivo não salvo.")
+    except Exception:
+        log(txt_log, "❌ Falha inesperada. Detalhes no traceback abaixo:")
+        log(txt_log, traceback.format_exc())
+        messagebox.showerror("Erro", "Falha inesperada (ver log).")
+    finally:
+        btn.config(state=NORMAL)
+
 def main():
     root = Tk()
     root.title(f"Extrator de PDFs — v{APP_VERSION}")
-    root.geometry("760x520")
+    root.geometry("760x560")
 
     Label(root, text="Selecione PDFs e clique em Processar para gerar 3 DOCX: e-mails, CNPJ e endereços.").pack(pady=8)
 
-    # botão principal
+    # botão principal (modo original)
     btn_processar = Button(root, text="Selecionar PDFs e Processar", width=32,
                            command=lambda: processar(btn_processar, txt_log))
-    btn_processar.pack(pady=10)
+    btn_processar.pack(pady=6)
+
+    # ---------- ALTERAÇÃO NO main(): novo botão ----------
+    btn_razao = Button(root, text="Selecionar PDFs e Gerar Razão + CNPJ", width=32)
+    btn_razao.config(command=lambda: processar_razao_cnpj(btn_razao, txt_log))
+    btn_razao.pack(pady=6)
 
     # log (mantemos o painel, sem mensagem inicial)
     Label(root, text="Log:").pack(anchor="w", padx=8)
