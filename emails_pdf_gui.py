@@ -480,7 +480,7 @@ def main():
     btn_processar.pack(pady=6)
 
     # ---------- ALTERAÇÃO NO main(): novo botão ----------
-    btn_razao = Button(root, text="Selecionar PDFs e Gerar Razão + CNPJ", width=32)
+    btn_razao = Button(root, text="Botão do Valverde", width=32)
     btn_razao.config(command=lambda: processar_razao_cnpj(btn_razao, txt_log))
     btn_razao.pack(pady=6)
 
